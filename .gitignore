@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Dataset and generated artefacts (the Fusion 360 Gallery licence forbids redistributing the dataset)
+/data/
+/outputs/

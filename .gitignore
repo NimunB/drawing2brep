@@ -222,3 +222,6 @@ __marimo__/
 # Dataset and generated artefacts (the Fusion 360 Gallery licence forbids redistributing the dataset)
 /data/
 /outputs/
+
+# Plan file
+PLAN.md

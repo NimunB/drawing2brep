@@ -113,6 +113,9 @@ def test_program_is_readable_text():
     assert code.startswith("import cadquery as cq")
     assert "result = part_1" in code
     assert ".extrude(3.0)" in code
+    # Steps are numbered, and the dataset's own step name ("Extrude1") is left out.
+    assert "# Step 1: new body" in code
+    assert "Extrude1" not in code
 
 
 # Helper: builds the solid for a plain rectangle extruded with the given settings.

@@ -130,13 +130,13 @@ def _loop_code(loop: dict) -> str:
     return code + ".close()"
 
 
-# Writes the CadQuery calls for one profile: its outer boundary, then its holes.
-def _profile_code(profile: dict) -> str:
+# Writes the CadQuery calls for one profile, one loop per item: outer boundary, then holes.
+def _profile_code(profile: dict) -> list[str]:
     loops = sorted(profile["loops"], key=lambda loop: not loop["is_outer"])
     if not loops or not loops[0]["is_outer"]:
         raise UnsupportedError("profile has no outer loop")
     # A closed shape drawn inside another becomes a hole when extruded.
-    return "".join(_loop_code(loop) for loop in loops)
+    return [_loop_code(loop) for loop in loops]
 
 
 # Writes the line that defines where a sketch's flat plane sits in 3D.
@@ -218,7 +218,8 @@ def convert(design: dict) -> str:
         plane_shift, extrude_call = _extrude_code(extrude)
         count += 1
         part = f"part_{count}"
-        lines.append(f"# {extrude['name']}: {OPERATIONS[operation]}")
+        # Steps are numbered; the designer's own step names are not copied into the program.
+        lines.append(f"# Step {count}: {OPERATIONS[operation]}")
 
         # Build one solid per profile and merge them into this extrude's solid.
         for i, ref in enumerate(extrude["profiles"]):
@@ -226,10 +227,13 @@ def convert(design: dict) -> str:
             if ref["sketch"] not in planes:
                 planes[ref["sketch"]] = f"plane_{len(planes) + 1}"
                 lines.append(_plane_code(planes[ref["sketch"]], sketch))
-            outline = _profile_code(sketch["profiles"][ref["profile"]])
+            loops = _profile_code(sketch["profiles"][ref["profile"]])
             plane = planes[ref["sketch"]]
-            solid = f"cq.Workplane({plane}){plane_shift}{outline}{extrude_call}"
-            lines.append(f"{part} = {solid}" if i == 0 else f"{part} = {part}.union({solid})")
+            # One idea per line: the plane, then each loop, then the extrude.
+            chain = [f"cq.Workplane({plane}){plane_shift}", *loops, extrude_call]
+            lines.append(f"{part} = (" if i == 0 else f"{part} = {part}.union(")
+            lines.extend(f"    {call}" for call in chain)
+            lines.append(")")
 
         # Combine this extrude's solid with everything built so far.
         if not have_result:

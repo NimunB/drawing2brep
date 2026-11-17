@@ -1,8 +1,4 @@
-"""Geometric comparison of solids: load ground truth, compute exact volumetric IoU.
-
-All lengths are in centimetres, the unit of the Fusion 360 Gallery JSON. STEP files are
-read in millimetres by OpenCascade, so `load_step` scales them back to centimetres.
-"""
+"""The verifier: measures how closely two solids match (lengths are in centimetres)."""
 
 # This file only measures two solids that already exist. It converts and generates nothing.
 
@@ -12,8 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cadquery as cq
+import numpy as np
 
 MM_PER_CM = 10.0
+
+# Solids are treated as touching when they are within this distance (cm) of each other.
+FUZZY_TOLERANCE = 1e-4
+
+# Two measurements of shared volume must agree to within this fraction to be trusted.
+AGREEMENT = 1e-3
+
+# Number of random points used when falling back to sampling.
+SAMPLE_POINTS = 20000
 
 
 # Unwraps whatever a CadQuery program returns into one plain solid we can measure.
@@ -34,8 +40,7 @@ def to_shape(obj: cq.Workplane | cq.Shape) -> cq.Shape:
 # Reads a part's true solid (the correct answer) from the dataset's .step file.
 def load_step(path: str | Path) -> cq.Shape:
     """Load a ground-truth STEP file as a single shape in centimetres."""
-    # The .step file is the correct answer from the dataset. We only read it, never write it.
-    # Scale mm -> cm; without this the true solid is 1,000x too large in volume.
+    # The engine loads STEP files in mm but our programs are in cm, so scale by 1/10.
     return to_shape(cq.importers.importStep(str(path))).scale(1.0 / MM_PER_CM)
 
 
@@ -46,6 +51,7 @@ class Comparison:
     volume: float  # candidate's volume, cm^3
     volume_ref: float  # true solid's volume, cm^3
     iou: float  # overlap score, 0 to 1; the main number
+    method: str  # how the IoU was measured: "exact", "sampled" or "empty"
 
     # Returns how far off the candidate's volume is, as a fraction (0.05 = 5% off).
     @property
@@ -54,30 +60,80 @@ class Comparison:
         return abs(self.volume - self.volume_ref) / self.volume_ref
 
 
-# Scores how well two solids overlap: shared volume / total covered volume (1 = identical).
-def iou(a: cq.Shape, b: cq.Shape) -> float:
-    """Exact volumetric intersection over union, from a B-Rep boolean."""
+# Adds up the volume of every solid body inside a shape.
+def _total_volume(shape: cq.Shape) -> float:
+    return sum(solid.Volume() for solid in shape.Solids())
+
+
+# Measures the shared volume exactly, two independent ways; None if they disagree.
+def _exact_shared_volume(a: cq.Shape, b: cq.Shape, va: float, vb: float) -> float | None:
+    # The engine can silently get near-identical solids wrong, so two answers must agree.
+    try:
+        # Way 1: build the region inside both solids and measure it.
+        direct = _total_volume(a.intersect(b, tol=FUZZY_TOLERANCE))
+        # Way 2: merge the solids; the merged volume is va + vb minus the shared part.
+        via_merge = va + vb - _total_volume(a.fuse(b, tol=FUZZY_TOLERANCE))
+    except Exception:  # noqa: BLE001
+        return None
+    smaller = min(va, vb)
+    if abs(direct - via_merge) > AGREEMENT * smaller:
+        return None
+    # The shared part can never be negative or bigger than the smaller solid.
+    if direct < -AGREEMENT * smaller or direct > (1.0 + AGREEMENT) * smaller:
+        return None
+    return max(0.0, min(direct, smaller))
+
+
+# True/False for each point: is it inside the shape?
+def _points_inside(shape: cq.Shape, points: np.ndarray) -> np.ndarray:
+    inside = np.zeros(len(points), dtype=bool)
+    # A shape may hold several bodies; a point counts if it is inside any of them.
+    for solid in shape.Solids():
+        inside |= np.array([solid.isInside(cq.Vector(*p), 1e-6) for p in points])
+    return inside
+
+
+# Estimates IoU by scattering random points and counting which solids contain them.
+def _sampled_iou(a: cq.Shape, b: cq.Shape) -> float:
+    # Slower and approximate, so it is only the fallback when the exact method fails.
+    box_a, box_b = a.BoundingBox(), b.BoundingBox()
+    low = np.minimum([box_a.xmin, box_a.ymin, box_a.zmin], [box_b.xmin, box_b.ymin, box_b.zmin])
+    high = np.maximum([box_a.xmax, box_a.ymax, box_a.zmax], [box_b.xmax, box_b.ymax, box_b.zmax])
+    # A fixed seed makes the score identical every time it is run.
+    points = np.random.default_rng(0).uniform(low, high, (SAMPLE_POINTS, 3))
+    in_a, in_b = _points_inside(a, points), _points_inside(b, points)
+    in_either = int((in_a | in_b).sum())
+    return float((in_a & in_b).sum() / in_either) if in_either else 0.0
+
+
+# Scores the overlap and also says which method produced the score.
+def iou_with_method(a: cq.Shape, b: cq.Shape) -> tuple[float, str]:
     va, vb = a.Volume(), b.Volume()
     # An empty or broken solid scores 0 instead of dividing by zero.
     if va <= 0.0 or vb <= 0.0:
-        return 0.0
-    # Volume of the region that is inside both solids.
-    inter = sum(s.Volume() for s in a.intersect(b).Solids())
+        return 0.0, "empty"
+    shared = _exact_shared_volume(a, b, va, vb)
+    if shared is None:
+        return _sampled_iou(a, b), "sampled"
     # Adding both volumes counts the shared region twice, so subtract it once.
-    union = va + vb - inter
-    # Clamp to 0..1 to absorb tiny numerical errors from the geometry engine.
-    return max(0.0, min(1.0, inter / union)) if union > 0.0 else 0.0
+    return shared / (va + vb - shared), "exact"
+
+
+# Scores how well two solids overlap: shared volume / total covered volume (1 = identical).
+def iou(a: cq.Shape, b: cq.Shape) -> float:
+    """Volumetric intersection over union."""
+    return iou_with_method(a, b)[0]
 
 
 # Main entry point: checks a candidate solid against the true solid and returns all scores.
 def compare(candidate: cq.Workplane | cq.Shape, reference: cq.Shape) -> Comparison:
-    # candidate = solid built by running a CadQuery program (ours or the model's).
-    # reference = true solid from load_step.
-    # No alignment is done: a correct shape in the wrong position scores low.
+    # candidate = solid built by running a program; reference = true solid from load_step.
     shape = to_shape(candidate)
+    score, method = iou_with_method(shape, reference)
     return Comparison(
         valid=shape.isValid() and shape.Volume() > 0.0,
         volume=shape.Volume(),
         volume_ref=reference.Volume(),
-        iou=iou(shape, reference),
+        iou=score,
+        method=method,
     )

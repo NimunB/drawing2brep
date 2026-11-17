@@ -20,6 +20,8 @@ packages = ["src/d2b"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Markdown files quote converter output exactly as generated, so leave their code blocks alone.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

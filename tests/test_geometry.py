@@ -1,4 +1,4 @@
-""The verifier scores identical solids as 1 and known overlaps exactly."""
+"""The verifier scores identical solids as 1 and known overlaps exactly."""
 
 import cadquery as cq
 import pytest

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import cadquery as cq
 import numpy as np
+from scipy.spatial import cKDTree
 
 MM_PER_CM = 10.0
 
@@ -20,6 +21,15 @@ AGREEMENT = 1e-3
 
 # Number of random points used when falling back to sampling.
 SAMPLE_POINTS = 20000
+
+# Number of points scattered on each solid's surface to make its point cloud.
+SURFACE_POINTS = 2048
+
+# A much denser cloud used as the target when measuring Chamfer distance.
+DENSE_POINTS = 30000
+
+# Surfaces are split into triangles no further from the true surface than this fraction of size.
+MESH_TOLERANCE = 1e-3
 
 
 # Unwraps whatever a CadQuery program returns into one plain solid we can measure.
@@ -136,4 +146,104 @@ def compare(candidate: cq.Workplane | cq.Shape, reference: cq.Shape) -> Comparis
         volume_ref=reference.Volume(),
         iou=score,
         method=method,
+    )
+
+
+# The full set of measurements used to grade a candidate solid against the true solid.
+@dataclass(frozen=True)
+class Evaluation:
+    valid: bool  # is the candidate a proper closed solid with some volume?
+    iou: float  # overlap score, 0 to 1, with the candidate where its program put it
+    iou_aligned: float  # overlap score after sliding the candidate onto the true solid
+    method: str  # how the IoU was measured: "exact", "sampled" or "empty"
+    volume_error: float  # relative volume error (0.05 = 5% off)
+    chamfer: float  # average distance between the surfaces after aligning, in cm
+    chamfer_normalised: float  # the same, as a fraction of the true solid's diagonal
+    size_error: float  # worst relative error in overall width, depth or height
+    face_count: int  # number of faces on the candidate
+    face_count_ref: int  # number of faces on the solid used as the structure reference
+    edge_count: int  # number of edges on the candidate
+    edge_count_ref: int  # number of edges on the solid used as the structure reference
+
+    # True when the candidate has the same number of faces and edges as the structure reference.
+    @property
+    def same_structure(self) -> bool:
+        return self.face_count == self.face_count_ref and self.edge_count == self.edge_count_ref
+
+
+# Length of the diagonal of a solid's bounding box: a single number for its overall size.
+def _diagonal(shape: cq.Shape) -> float:
+    return shape.BoundingBox().DiagonalLength
+
+
+# Scatters points evenly over a solid's surface; this is its point cloud.
+def sample_surface(shape: cq.Shape, count: int = SURFACE_POINTS, seed: int = 0) -> np.ndarray:
+    # Split the surface into triangles (a mesh), fine enough to follow the curves.
+    vertices, triangles = shape.tessellate(_diagonal(shape) * MESH_TOLERANCE)
+    points = np.array([v.toTuple() for v in vertices])
+    corners = points[np.array(triangles)]
+    a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
+    # Bigger triangles get more points, so the points are spread evenly by area.
+    areas = np.linalg.norm(np.cross(b - a, c - a), axis=1) / 2.0
+    rng = np.random.default_rng(seed)
+    chosen = rng.choice(len(areas), size=count, p=areas / areas.sum())
+    # Pick a random spot inside each chosen triangle.
+    u, v = rng.random(count), rng.random(count)
+    flip = u + v > 1.0
+    u[flip], v[flip] = 1.0 - u[flip], 1.0 - v[flip]
+    return a[chosen] + u[:, None] * (b - a)[chosen] + v[:, None] * (c - a)[chosen]
+
+
+# Average distance from each point on one surface to the nearest point on the other.
+def chamfer_distance(a: cq.Shape, b: cq.Shape) -> float:
+    # Each solid gets a dense cloud; its first points serve as the sparse cloud to measure from.
+    dense_a, dense_b = sample_surface(a, DENSE_POINTS), sample_surface(b, DENSE_POINTS)
+    # Measuring to a dense cloud keeps the gaps between points from inflating the distance.
+    a_to_b = cKDTree(dense_b).query(dense_a[:SURFACE_POINTS])[0]
+    b_to_a = cKDTree(dense_a).query(dense_b[:SURFACE_POINTS])[0]
+    # Measured both ways and averaged, so neither solid is favoured.
+    return float((a_to_b.mean() + b_to_a.mean()) / 2.0)
+
+
+# Worst relative error in overall width, depth or height.
+def size_error(candidate: cq.Shape, reference: cq.Shape) -> float:
+    box, ref = candidate.BoundingBox(), reference.BoundingBox()
+    sizes = np.array([box.xlen, box.ylen, box.zlen])
+    ref_sizes = np.array([ref.xlen, ref.ylen, ref.zlen])
+    return float(np.max(np.abs(sizes - ref_sizes) / ref_sizes))
+
+
+# Slides a candidate so the centre of its bounding box sits on the reference's centre.
+def align_centres(candidate: cq.Shape, reference: cq.Shape) -> cq.Shape:
+    # A drawing does not show where the part sits in space, so position is not graded.
+    return candidate.translate(reference.BoundingBox().center - candidate.BoundingBox().center)
+
+
+# Grades a candidate against the true solid with every measurement. Used to score models.
+def evaluate(
+    candidate: cq.Workplane | cq.Shape,
+    reference: cq.Shape,
+    structure_reference: cq.Workplane | cq.Shape | None = None,
+) -> Evaluation:
+    shape = to_shape(candidate)
+    basic = compare(shape, reference)
+    # Shape and size are graded with the position difference removed.
+    aligned = align_centres(shape, reference)
+    chamfer = chamfer_distance(aligned, reference)
+    # Face counts depend on how a solid was built, so they are compared with a solid built
+    # the same way (the label program's solid) when one is given.
+    structure = to_shape(structure_reference) if structure_reference is not None else reference
+    return Evaluation(
+        valid=basic.valid,
+        iou=basic.iou,
+        iou_aligned=iou(aligned, reference),
+        method=basic.method,
+        volume_error=basic.volume_error,
+        chamfer=chamfer,
+        chamfer_normalised=chamfer / _diagonal(reference),
+        size_error=size_error(shape, reference),
+        face_count=len(shape.Faces()),
+        face_count_ref=len(structure.Faces()),
+        edge_count=len(shape.Edges()),
+        edge_count_ref=len(structure.Edges()),
     )

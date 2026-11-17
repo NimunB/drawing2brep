@@ -2,7 +2,7 @@
 
 Engineers describe parts with flat technical drawings, but design software needs a 3D model that can be edited. This project turns a drawing of a part into an editable CAD program, checks the result against the true geometry, and (planned) lets you change it with requests like "make it 5 mm thicker". It is trained and tested on [Fusion 360 Gallery](https://github.com/AutodeskAILab/Fusion360GalleryDataset), Autodesk Research's dataset of real designs with their construction history.
 
-> **Status:** in development. The dataset conversion and the geometric verifier are built and measured (see [Results so far](#results-so-far)). Drawing generation, baselines and training are not started. Results are added as they are measured.
+> **Status:** in development. The dataset conversion, the geometric verifier and the drawing generation are built and measured (see [Results so far](#results-so-far)). Baselines and training are not started. Results are added as they are measured.
 
 ## Example
 
@@ -47,7 +47,7 @@ This shows the intended end-to-end result. The model is not trained yet: the pro
 ## How it works
 
 1. **Done.** Converts each dataset design into a CadQuery program and verifies it reproduces the original solid.
-2. **Planned.** Produces every representation of each design with a Ray pipeline: orthographic drawing with hidden lines, mesh, point cloud, and B-Rep face-adjacency graph.
+2. **Partly done.** Produces every representation of each design with a Ray pipeline. The orthographic drawings with hidden lines are generated; the mesh, point cloud and B-Rep face-adjacency graph are planned.
 3. **Planned.** Fine-tunes a vision-language model to write the CadQuery program from the drawing.
 4. **Planned.** Executes the generated program in a sandbox and measures the solid against the ground truth.
 
@@ -86,6 +86,20 @@ The verifier decides whether a program is correct. It compares the solid the pro
 
 Measuring IoU reliably needed one fix. A single boolean operation sometimes reported zero overlap for two identical solids. The shared volume is now measured two independent ways (boolean intersection and boolean union) and accepted only if they agree to within 0.1%; otherwise IoU is estimated from 20,000 sampled points. Of the 7,696 verified designs, 466 were scored by sampling.
 
+### Drawings
+
+Each verified design is drawn from its ground-truth solid: front, top and right views at one scale, with hidden edges dashed and the overall width, height and depth marked. Each drawing is a 768 × 768 image. The code is in [`src/d2b/pipeline/drawing.py`](src/d2b/pipeline/drawing.py), and the Ray job that runs it over the dataset is [`src/d2b/pipeline/ray_job.py`](src/d2b/pipeline/ray_job.py).
+
+| | |
+| --- | --- |
+| Designs drawn | 7,696 of 7,696 |
+| Failures | 0 |
+| Training pairs (drawing and program) | 6,155 |
+| Test pairs | 1,541 |
+| Throughput | About 100 designs per second on 10 workers |
+
+Some designs are hard to read at one shared scale: in 1,303 (16.9%) the smallest side is under 5% of the largest, and 778 (10.1%) are made of more than one body. They are kept in the dataset.
+
 ### Model results (not measured yet)
 
 | Model | Valid solid | Mean IoU | IoU > 0.9 | Chamfer distance | Volume error |
@@ -101,7 +115,8 @@ Measuring IoU reliably needed one fix. A single boolean operation sometimes repo
 MVP
 
 - [x] Sequence-to-CadQuery converter with verification
-- [ ] Ray pipeline for drawings, meshes, point clouds and B-Rep graphs
+- [x] Ray pipeline for drawings
+- [ ] Meshes, point clouds and B-Rep graphs, added to the same pipeline
 - [ ] Geometric evaluator (validity, volume error and IoU done; Chamfer distance and face and edge counts to do)
 - [ ] Zero-shot baselines
 - [ ] LoRA fine-tune

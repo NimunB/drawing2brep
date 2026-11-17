@@ -56,7 +56,7 @@ This shows the intended end-to-end result. The model is not trained yet: the pro
 - **The output is a CadQuery program,** not a mesh. It is readable, editable, and runs without a CAD application.
 - **Convert, then verify.** A converted program is kept only if its solid matches the original (IoU above 0.99). The yield is reported.
 - **Official split.** The dataset's 6,900 training and 1,725 test designs. Only designs with a verified program are used (6,155 and 1,541), so test results are on that subset and are comparable with work that uses all 1,725.
-- **Drawings carry overall dimensions.** Without them scale cannot be recovered. Metrics are reported both absolute and scale-normalised.
+- **Drawings carry overall dimensions.** Without them scale cannot be recovered. Metrics are reported both absolute and scale-normalised. Sizes of inner features such as holes are not marked, so the model has to estimate them from the image, which limits how exact its output can be.
 - **Baselines before training.** Off-the-shelf models are benchmarked first on the same test set.
 - **Failure taxonomy.** Each failure is classed as wrong dimension, missing feature or invalid solid.
 

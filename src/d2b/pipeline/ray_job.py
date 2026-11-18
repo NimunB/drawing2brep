@@ -1,4 +1,4 @@
-"""Draw every verified part and save the training pairs: one drawing with its program."""
+"""Make every representation of each verified part, and save the training pairs."""
 
 # Run with: uv run python -m d2b.pipeline.ray_job (Ray spreads the parts across CPU cores).
 
@@ -14,10 +14,14 @@ from pathlib import Path
 # Stops Ray starting each worker through `uv`, which made start-up take over a minute.
 os.environ.setdefault("RAY_ENABLE_UV_RUN_RUNTIME_ENV", "0")
 
+import numpy as np  # noqa: E402
 import ray  # noqa: E402
 
 from d2b.eval.geometry import load_step  # noqa: E402
+from d2b.pipeline.brep_graph import make_graph  # noqa: E402
 from d2b.pipeline.drawing import save_drawing  # noqa: E402
+from d2b.pipeline.mesh import make_mesh  # noqa: E402
+from d2b.pipeline.pointcloud import sample_points  # noqa: E402
 
 DEFAULT_ROOT = Path("data/raw/r1.0.1")
 DEFAULT_LABELS = Path("outputs/verify.jsonl")
@@ -39,21 +43,37 @@ def load_labels(path: Path) -> dict[str, str]:
     return labels
 
 
-# Draws one part from its true solid and saves the image; returns what happened.
-def draw_part(name: str, root: Path, out_dir: Path) -> dict:
+# Saves a part's mesh, point cloud and B-Rep graph together in one compressed file.
+def save_representations(solid, path: Path) -> None:
+    mesh_points, mesh_triangles = make_mesh(solid)
+    cloud_points, cloud_normals = sample_points(solid)
+    np.savez_compressed(
+        path,
+        mesh_points=mesh_points.astype(np.float32),
+        mesh_triangles=mesh_triangles.astype(np.int32),
+        cloud_points=cloud_points.astype(np.float32),
+        cloud_normals=cloud_normals.astype(np.float32),
+        **make_graph(solid),
+    )
+
+
+# Makes every representation of one part from its true solid; returns what happened.
+def process_part(name: str, root: Path, out_dir: Path, representations: bool) -> dict:
     try:
-        # The drawing comes from the dataset's solid, never from our converted program.
+        # Everything comes from the dataset's solid, never from our converted program.
         solid = load_step(root / "reconstruction" / f"{name}.step")
         save_drawing(solid, out_dir / "drawings" / f"{name}.png")
+        if representations:
+            save_representations(solid, out_dir / "representations" / f"{name}.npz")
     except Exception as error:  # noqa: BLE001
         return {"name": name, "status": "failed", "detail": f"{type(error).__name__}: {error}"}
     return {"name": name, "status": "ok", "detail": ""}
 
 
-# Ray task: draws a group of parts on one worker.
+# Ray task: processes a group of parts on one worker.
 @ray.remote
-def draw_batch(names: list[str], root: Path, out_dir: Path) -> list[dict]:
-    return [draw_part(name, root, out_dir) for name in names]
+def process_batch(names: list[str], root: Path, out_dir: Path, representations: bool) -> list[dict]:
+    return [process_part(name, root, out_dir, representations) for name in names]
 
 
 # Writes one file of pairs for a split: each line has a part's drawing path and its program.
@@ -77,6 +97,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     parser.add_argument("--limit", type=int, default=None)
+    # Drawings are always made; the mesh, point cloud and graph are made only when asked for.
+    parser.add_argument("--representations", action="store_true")
     args = parser.parse_args()
 
     labels = load_labels(args.labels)
@@ -84,12 +106,13 @@ def main() -> None:
     # Workers run in other processes, so they are given full paths.
     root, out_dir = args.root.resolve(), args.out.resolve()
     (out_dir / "drawings").mkdir(parents=True, exist_ok=True)
+    (out_dir / "representations").mkdir(parents=True, exist_ok=True)
 
     # Start Ray on this machine with a fixed number of worker processes.
     ray.init(num_cpus=args.workers, include_dashboard=False, logging_level="ERROR")
     started = time.time()
     batches = [names[i : i + BATCH_SIZE] for i in range(0, len(names), BATCH_SIZE)]
-    futures = [draw_batch.remote(batch, root, out_dir) for batch in batches]
+    futures = [process_batch.remote(b, root, out_dir, args.representations) for b in batches]
     # ray.get waits for every worker to finish and collects their results.
     results = [record for batch in ray.get(futures) for record in batch]
     seconds = time.time() - started

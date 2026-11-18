@@ -11,6 +11,8 @@ import cadquery as cq
 import numpy as np
 from scipy.spatial import cKDTree
 
+from d2b.pipeline.pointcloud import sample_points
+
 MM_PER_CM = 10.0
 
 # Solids are treated as touching when they are within this distance (cm) of each other.
@@ -27,9 +29,6 @@ SURFACE_POINTS = 2048
 
 # A much denser cloud used as the target when measuring Chamfer distance.
 DENSE_POINTS = 30000
-
-# Surfaces are split into triangles no further from the true surface than this fraction of size.
-MESH_TOLERANCE = 1e-3
 
 
 # Unwraps whatever a CadQuery program returns into one plain solid we can measure.
@@ -178,20 +177,8 @@ def _diagonal(shape: cq.Shape) -> float:
 
 # Scatters points evenly over a solid's surface; this is its point cloud.
 def sample_surface(shape: cq.Shape, count: int = SURFACE_POINTS, seed: int = 0) -> np.ndarray:
-    # Split the surface into triangles (a mesh), fine enough to follow the curves.
-    vertices, triangles = shape.tessellate(_diagonal(shape) * MESH_TOLERANCE)
-    points = np.array([v.toTuple() for v in vertices])
-    corners = points[np.array(triangles)]
-    a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
-    # Bigger triangles get more points, so the points are spread evenly by area.
-    areas = np.linalg.norm(np.cross(b - a, c - a), axis=1) / 2.0
-    rng = np.random.default_rng(seed)
-    chosen = rng.choice(len(areas), size=count, p=areas / areas.sum())
-    # Pick a random spot inside each chosen triangle.
-    u, v = rng.random(count), rng.random(count)
-    flip = u + v > 1.0
-    u[flip], v[flip] = 1.0 - u[flip], 1.0 - v[flip]
-    return a[chosen] + u[:, None] * (b - a)[chosen] + v[:, None] * (c - a)[chosen]
+    # The scattering itself lives with the other representations, in the pipeline.
+    return sample_points(shape, count, seed)[0]
 
 
 # Average distance from each point on one surface to the nearest point on the other.

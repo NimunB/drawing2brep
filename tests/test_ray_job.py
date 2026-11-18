@@ -5,8 +5,9 @@
 import json
 
 import cadquery as cq
+import numpy as np
 
-from d2b.pipeline.ray_job import draw_part, load_labels, write_pairs
+from d2b.pipeline.ray_job import load_labels, process_part, write_pairs
 
 
 # Helper: writes records to a file, one JSON object per line.
@@ -41,18 +42,34 @@ def test_write_pairs_needs_a_program_and_a_drawing(tmp_path):
 
 
 # Drawing a real STEP file saves an image and reports success.
-def test_draw_part_saves_an_image(tmp_path):
+def test_process_part_saves_an_image(tmp_path):
     (tmp_path / "reconstruction").mkdir()
     (tmp_path / "out" / "drawings").mkdir(parents=True)
     step = tmp_path / "reconstruction" / "box.step"
     cq.exporters.export(cq.Workplane("XY").box(40, 20, 10), str(step))
-    result = draw_part("box", tmp_path, tmp_path / "out")
+    result = process_part("box", tmp_path, tmp_path / "out", representations=False)
     assert result["status"] == "ok"
     assert (tmp_path / "out" / "drawings" / "box.png").exists()
 
 
 # A part whose file is missing is reported as failed, and does not stop the job.
-def test_draw_part_reports_a_missing_file(tmp_path):
-    result = draw_part("nothing_here", tmp_path, tmp_path)
+def test_process_part_reports_a_missing_file(tmp_path):
+    result = process_part("nothing_here", tmp_path, tmp_path, representations=False)
     assert result["status"] == "failed"
     assert result["name"] == "nothing_here"
+
+
+# When asked, one file holding the mesh, point cloud and graph is saved beside the drawing.
+def test_process_part_saves_the_representations(tmp_path):
+    (tmp_path / "reconstruction").mkdir()
+    (tmp_path / "out" / "drawings").mkdir(parents=True)
+    (tmp_path / "out" / "representations").mkdir()
+    step = tmp_path / "reconstruction" / "box.step"
+    cq.exporters.export(cq.Workplane("XY").box(40, 20, 10), str(step))
+    result = process_part("box", tmp_path, tmp_path / "out", representations=True)
+    assert result["status"] == "ok"
+    saved = np.load(tmp_path / "out" / "representations" / "box.npz")
+    # A box has 6 faces, and its point cloud has the standard 2,048 points.
+    assert len(saved["face_type"]) == 6
+    assert saved["cloud_points"].shape == (2048, 3)
+    assert saved["mesh_triangles"].shape[1] == 3

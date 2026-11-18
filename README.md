@@ -47,7 +47,7 @@ This shows the intended end-to-end result. The model is not trained yet: the pro
 ## How it works
 
 1. **Done.** Converts each dataset design into a CadQuery program and verifies it reproduces the original solid.
-2. **Partly done.** Produces every representation of each design with a Ray pipeline. The orthographic drawings with hidden lines are generated; the mesh, point cloud and B-Rep face-adjacency graph are planned.
+2. **Done.** Produces every representation of each design with a Ray pipeline: orthographic drawing with hidden lines, mesh, point cloud, and B-Rep face-adjacency graph.
 3. **Planned.** Fine-tunes a vision-language model to write the CadQuery program from the drawing.
 4. **Done.** Executes the generated program in a sandbox and measures the solid against the ground truth.
 
@@ -100,6 +100,27 @@ Each verified design is drawn from its ground-truth solid: front, top and right 
 
 Some designs are hard to read at one shared scale: in 1,303 (16.9%) the smallest side is under 5% of the largest, and 778 (10.1%) are made of more than one body. They are kept in the dataset.
 
+### Other representations
+
+The same Ray job also saves three 3D representations of each design, in one file per design. The model does not use them; they are produced to support later work on B-Rep data. The code is in [`src/d2b/pipeline/`](src/d2b/pipeline/).
+
+| Representation | Contents |
+| --- | --- |
+| Mesh | Vertices and triangles, tessellated to 0.1% of the design's diagonal |
+| Point cloud | 2,048 surface points sampled by area, with normals |
+| B-Rep face-adjacency graph | Per face: surface type, area, centre, normal. Per shared edge: the two faces, curve type, length |
+
+All 7,696 designs were processed with no failures. Checked against the dataset's ground-truth solids, every graph has the correct number of faces and no face is unconnected. Mesh volume differs from the solid's by a median of 0.015%; four meshes are off by more than 1%. The dataset contains 104,043 faces: 77,982 planes, 26,005 cylinders and 56 cones.
+
+Throughput on the same 800 designs, producing the drawing and all three representations (Apple M4 Pro):
+
+| Workers | Designs per second | Speed-up |
+| --- | --- | --- |
+| 1 | 3.4 | 1.0× |
+| 2 | 6.2 | 1.8× |
+| 4 | 12.3 | 3.6× |
+| 8 | 18.5 | 5.4× |
+
 ### Model results
 
 | Model | Valid solid | Mean IoU | IoU > 0.9 | Chamfer distance | Volume error |
@@ -123,7 +144,7 @@ MVP
 
 - [x] Sequence-to-CadQuery converter with verification
 - [x] Ray pipeline for drawings
-- [ ] Meshes, point clouds and B-Rep graphs, added to the same pipeline
+- [x] Meshes, point clouds and B-Rep graphs, added to the same pipeline
 - [x] Geometric evaluator: validity, IoU, volume and size error, Chamfer distance, face and edge counts
 - [x] Zero-shot baseline, frontier model
 - [ ] Zero-shot baseline, open model

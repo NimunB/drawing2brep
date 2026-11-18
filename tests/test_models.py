@@ -9,7 +9,8 @@ import pytest
 
 from d2b.eval.run import grade_reply, score_group
 from d2b.models.baselines import choose_pairs, cost_in_dollars
-from d2b.models.prompt import extract_program
+from d2b.models.prompt import SYSTEM_PROMPT, USER_PROMPT, extract_program
+from d2b.models.qwen import batches, build_messages, pending_pairs
 
 BOX_PROGRAM = 'import cadquery as cq\n\nresult = cq.Workplane("XY").box(40, 20, 10)\n'
 
@@ -97,3 +98,27 @@ def test_score_group_counts_failures_as_zero():
     assert mean == pytest.approx((1.0 + 0.95 + 0.0 + 0.5) / 4)
     # Two of the four are above 0.9.
     assert close == pytest.approx(0.5)
+
+
+# Qwen is sent the same instructions and request as Claude, with a marker for the image.
+def test_qwen_gets_the_same_prompt_as_claude():
+    system, user = build_messages()
+    assert system == {"role": "system", "content": SYSTEM_PROMPT}
+    assert user["role"] == "user"
+    assert user["content"] == [{"type": "image"}, {"type": "text", "text": USER_PROMPT}]
+
+
+# A run that was stopped only asks about the drawings it has no reply for yet.
+def test_pending_pairs_skips_finished_drawings(tmp_path):
+    pairs = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+    out = tmp_path / "replies.jsonl"
+    # Before anything is saved, every drawing is still to do.
+    assert pending_pairs(pairs, out) == pairs
+    out.write_text(json.dumps({"name": "b", "reply": "..."}) + "\n")
+    assert pending_pairs(pairs, out) == [{"name": "a"}, {"name": "c"}]
+
+
+# Drawings are grouped into batches of the given size, with a smaller last batch.
+def test_batches_splits_a_list():
+    assert batches([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+    assert batches([], 2) == []

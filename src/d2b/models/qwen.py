@@ -1,6 +1,7 @@
 """Zero-shot baseline with Qwen2.5-VL: show it test drawings and save the programs it writes."""
 
 # Run on the GPU machine with: uv run --extra gpu python -m d2b.models.qwen --limit 243
+# Add --adapter outputs/finetune/RUN/checkpoint-N to use weights trained by finetune.py.
 
 from __future__ import annotations
 
@@ -61,6 +62,21 @@ def pick_device() -> str:
     return "cpu"
 
 
+# Names the replies file after the model, and after the fine-tuning run if one is used.
+def default_out(model_id: str, adapter: Path | None) -> Path:
+    if adapter is None:
+        return Path(f"outputs/baseline_{model_id.split('/')[-1]}.jsonl")
+    # An adapter sits at .../RUN/checkpoint-N, so both parts go into the name.
+    return Path(f"outputs/finetuned_{adapter.parent.name}_{adapter.name}.jsonl")
+
+
+# Adds fine-tuned LoRA weights, saved by finetune.py, on top of a loaded model.
+def add_adapter(model, adapter: Path):
+    from peft import PeftModel
+
+    return PeftModel.from_pretrained(model, str(adapter)).eval()
+
+
 # Downloads (the first time) and loads the model and the processor that prepares its inputs.
 def load_model(model_id: str, device: str):
     # These libraries are only installed on the GPU machine, so they are imported here.
@@ -117,10 +133,10 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--adapter", type=Path, default=None)
     args = parser.parse_args()
 
-    # The file is named after the model, with characters that cannot be in a filename replaced.
-    out = args.out or Path(f"outputs/baseline_{args.model.split('/')[-1]}.jsonl")
+    out = args.out or default_out(args.model, args.adapter)
     out.parent.mkdir(parents=True, exist_ok=True)
     # The same fixed shuffle as the Claude baseline, so both models see the same parts.
     todo = pending_pairs(choose_pairs(args.pairs, args.limit), out)
@@ -131,6 +147,8 @@ def main() -> None:
     device = pick_device()
     print(f"loading {args.model} on {device} ...")
     model, processor = load_model(args.model, device)
+    if args.adapter:
+        model = add_adapter(model, args.adapter)
 
     started, done = time.time(), 0
     with out.open("a") as handle:
@@ -139,6 +157,8 @@ def main() -> None:
             answers = generate_replies(model, processor, images, args.max_new_tokens)
             for pair, answer in zip(batch, answers, strict=True):
                 record = {"name": pair["name"], "model": args.model} | answer
+                if args.adapter:
+                    record["adapter"] = str(args.adapter)
                 handle.write(json.dumps(record) + "\n")
             # Saved after every batch, so a stopped run loses at most one batch.
             handle.flush()

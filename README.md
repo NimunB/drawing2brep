@@ -131,7 +131,7 @@ Throughput on the same 800 designs, producing the drawing and all three represen
 | + GRPO with geometric reward | | | | | |
 | + repair loop | | | | | |
 
-Both zero-shot rows are measured on the same 243 test drawings with the same prompt, one attempt per drawing and no examples in the prompt. The other rows are not measured yet.
+Both zero-shot rows are measured on the same 243 test drawings with the same prompt, one attempt per drawing and no examples in the prompt. The other rows are not measured yet. Per-part measurements are in [`results/`](results/).
 
 - **IoU is measured after aligning the centres of the two solids.** A drawing does not show where a part sits in space, so position is not graded. Size and orientation are.
 - **Mean IoU and IoU > 0.9 are over all drawings,** with a reply that gives no valid solid counted as 0. Chamfer distance (as a fraction of the part's diagonal) and volume error are medians over valid solids.

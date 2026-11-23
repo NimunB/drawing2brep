@@ -33,7 +33,6 @@ DENSE_POINTS = 30000
 
 # Unwraps whatever a CadQuery program returns into one plain solid we can measure.
 def to_shape(obj: cq.Workplane | cq.Shape) -> cq.Shape:
-    """Collapse a Workplane (possibly holding several bodies) into one Shape."""
     # Already a plain solid (e.g. from load_step): nothing to unwrap.
     if isinstance(obj, cq.Shape):
         return obj
@@ -48,7 +47,6 @@ def to_shape(obj: cq.Workplane | cq.Shape) -> cq.Shape:
 
 # Reads a part's true solid (the correct answer) from the dataset's .step file.
 def load_step(path: str | Path) -> cq.Shape:
-    """Load a ground-truth STEP file as a single shape in centimetres."""
     # The engine loads STEP files in mm but our programs are in cm, so scale by 1/10.
     return to_shape(cq.importers.importStep(str(path))).scale(1.0 / MM_PER_CM)
 
@@ -65,7 +63,6 @@ class Comparison:
     # Returns how far off the candidate's volume is, as a fraction (0.05 = 5% off).
     @property
     def volume_error(self) -> float:
-        """Relative volume error against the reference."""
         return abs(self.volume - self.volume_ref) / self.volume_ref
 
 
@@ -130,7 +127,6 @@ def iou_with_method(a: cq.Shape, b: cq.Shape) -> tuple[float, str]:
 
 # Scores how well two solids overlap: shared volume / total covered volume (1 = identical).
 def iou(a: cq.Shape, b: cq.Shape) -> float:
-    """Volumetric intersection over union."""
     return iou_with_method(a, b)[0]
 
 

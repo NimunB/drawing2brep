@@ -99,6 +99,7 @@ def check_program(code: str) -> str | None:
 
 # Applies limits to the separate process just before the program starts in it.
 def _limit_process(timeout: float):
+    # Runs inside the new process, before the program does.
     def apply() -> None:
         # Stop the process if it uses too much processor time or writes a huge file.
         cpu_seconds = int(timeout) + 5

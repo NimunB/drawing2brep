@@ -139,10 +139,20 @@ def _profile_code(profile: dict) -> list[str]:
     return [_loop_code(loop) for loop in loops]
 
 
+# Finds the middle of the box that just encloses the finished part.
+def design_centre(design: dict) -> tuple[float, float, float]:
+    box = design["properties"]["bounding_box"]
+    low, high = _xyz(box["min_point"]), _xyz(box["max_point"])
+    # Rounded like every other number, so moving the planes adds no new rounding error.
+    return tuple(round((a + b) / 2.0, DECIMALS) for a, b in zip(low, high, strict=True))
+
+
 # Writes the line that defines where a sketch's flat plane sits in 3D.
-def _plane_code(name: str, sketch: dict) -> str:
+def _plane_code(name: str, sketch: dict, centre: tuple[float, float, float]) -> str:
     t = sketch["transform"]
     origin, x_dir, normal = _xyz(t["origin"]), _xyz(t["x_axis"]), _xyz(t["z_axis"])
+    # Moving every plane by the same amount moves the whole part without changing its shape.
+    origin = tuple(o - c for o, c in zip(origin, centre, strict=True))
     return (
         f"{name} = cq.Plane(origin={_tuple(origin)}, xDir={_tuple(x_dir)}, normal={_tuple(normal)})"
     )
@@ -195,8 +205,8 @@ def _extrude_code(extrude: dict) -> tuple[str, str]:
     return plane_shift, call
 
 
-# Converts a whole design into the text of a CadQuery program.
-def convert(design: dict) -> str:
+# Converts a whole design into the text of a CadQuery program, moved so `centre` is the origin.
+def convert(design: dict, centre: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> str:
     entities = design["entities"]
     lines = ["import cadquery as cq", ""]
     # Maps each sketch's ID to the variable name of its plane, once written.
@@ -226,7 +236,7 @@ def convert(design: dict) -> str:
             sketch = entities[ref["sketch"]]
             if ref["sketch"] not in planes:
                 planes[ref["sketch"]] = f"plane_{len(planes) + 1}"
-                lines.append(_plane_code(planes[ref["sketch"]], sketch))
+                lines.append(_plane_code(planes[ref["sketch"]], sketch, centre))
             loops = _profile_code(sketch["profiles"][ref["profile"]])
             plane = planes[ref["sketch"]]
             # One idea per line: the plane, then each loop, then the extrude.

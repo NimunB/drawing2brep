@@ -11,7 +11,7 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from d2b.data.to_cadquery import UnsupportedError, convert
+from d2b.data.to_cadquery import UnsupportedError, convert, design_centre
 from d2b.eval.geometry import compare, load_step
 
 # A converted program is kept only if its solid overlaps the true solid this closely.
@@ -34,15 +34,20 @@ def check_design(json_path: Path) -> dict:
     record = {"name": name, "status": "", "detail": "", "iou": None, "program": None}
     design = json.loads(json_path.read_text())
 
-    # Step 1: translate the recorded steps into a program.
+    # Step 1: translate the recorded steps into a program that builds the part on the origin.
+    # A drawing does not show where a part sits, so its position is removed from the program.
+    centre = design_centre(design)
+    record["centre"] = list(centre)
     try:
-        record["program"] = convert(design)
+        record["program"] = convert(design, centre)
     except UnsupportedError as error:
         return record | {"status": "unsupported", "detail": str(error)}
 
     # Step 2: run the program to get our solid, then compare it with the true solid.
     try:
-        result = compare(run_program(record["program"]), load_step(json_path.with_suffix(".step")))
+        # The true solid is moved by the same amount, so the two are compared in the same place.
+        truth = load_step(json_path.with_suffix(".step")).translate(tuple(-c for c in centre))
+        result = compare(run_program(record["program"]), truth)
     except Exception as error:  # noqa: BLE001
         # The program crashed or built geometry the engine could not handle.
         return record | {"status": "error", "detail": type(error).__name__}

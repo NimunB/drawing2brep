@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from d2b.data.to_cadquery import UnsupportedError, convert
+from d2b.data.to_cadquery import UnsupportedError, convert, design_centre
 from d2b.data.verify import run_program
 from d2b.eval.geometry import to_shape
 
@@ -193,3 +193,43 @@ def test_open_loop_is_rejected():
     loops = [{"is_outer": True, "profile_curves": gap}]
     with pytest.raises(UnsupportedError, match="not closed"):
         convert(design({"s": sketch({"p": {"loops": loops}}), "e": extrude("s", "p", 3.0)}))
+
+
+# Helper: a 4 x 2 x 3 block sketched away from the origin, with its enclosing box recorded.
+def off_centre_block():
+    loops = [{"is_outer": True, "profile_curves": shuffled_rectangle()}]
+    entities = {"s": sketch({"p": {"loops": loops}}), "e": extrude("s", "p", 3.0)}
+    box = {"min_point": point(0, 0, 0), "max_point": point(4, 2, 3)}
+    return design(entities) | {"properties": {"bounding_box": box}}
+
+
+# The centre of a design is the middle of the box that encloses it.
+def test_design_centre_is_the_middle_of_the_box():
+    assert design_centre(off_centre_block()) == (2.0, 1.0, 1.5)
+
+
+# Without a centre, the program builds the part where the designer put it.
+def test_convert_keeps_position_by_default():
+    solid = to_shape(run_program(convert(off_centre_block())))
+    centre = solid.BoundingBox().center
+    assert (centre.x, centre.y, centre.z) == pytest.approx((2.0, 1.0, 1.5))
+
+
+# Given the centre, the program builds the same part sitting on the origin.
+def test_convert_can_move_the_part_to_the_origin():
+    block = off_centre_block()
+    solid = to_shape(run_program(convert(block, design_centre(block))))
+    centre = solid.BoundingBox().center
+    assert (centre.x, centre.y, centre.z) == pytest.approx((0.0, 0.0, 0.0), abs=1e-6)
+    # Moving the part does not change its shape.
+    assert solid.Volume() == pytest.approx(24.0)
+
+
+# Only the plane's origin changes in the program text; the outline is written as before.
+def test_recentring_changes_only_the_plane_origin():
+    block = off_centre_block()
+    before = convert(block).splitlines()
+    after = convert(block, design_centre(block)).splitlines()
+    changed = [new for old, new in zip(before, after, strict=True) if old != new]
+    assert len(changed) == 1
+    assert "origin=(-2.0, -1.0, -1.5)" in changed[0]

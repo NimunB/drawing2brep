@@ -18,7 +18,7 @@ One part from the dataset: a hex nut with a stepped hole (design `22430_c6f08b03
 import cadquery as cq
 
 # Step 1: new body
-plane_1 = cq.Plane(origin=(0.0, 0.0, 0.0), xDir=(1.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0))
+plane_1 = cq.Plane(origin=(0.0, -0.1981, 0.0), xDir=(1.0, 0.0, 0.0), normal=(0.0, 1.0, 0.0))
 part_1 = (
     cq.Workplane(plane_1)
     .polyline([(-0.1378, -0.2388), (-0.2757, 0.0), (-0.1378, 0.2388), (0.1378, 0.2388), (0.2757, 0.0), (0.1378, -0.2388)]).close()
@@ -28,7 +28,7 @@ part_1 = (
 result = part_1
 
 # Step 2: cut
-plane_2 = cq.Plane(origin=(0.0, 0.0, 0.0), xDir=(1.0, 0.0, 0.0), normal=(0.0, -1.0, 0.0))
+plane_2 = cq.Plane(origin=(0.0, -0.1981, 0.0), xDir=(1.0, 0.0, 0.0), normal=(0.0, -1.0, 0.0))
 part_2 = (
     cq.Workplane(plane_2)
     .moveTo(0.0, 0.0).circle(0.2083)

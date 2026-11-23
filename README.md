@@ -2,7 +2,7 @@
 
 Engineers describe parts with flat technical drawings, but design software needs a 3D model that can be edited. This project turns a drawing of a part into an editable CAD program, checks the result against the true geometry, and (planned) lets you change it with requests like "make it 5 mm thicker". This is a vision-language task: the model reads an image and writes code. It is trained and tested on [Fusion 360 Gallery](https://github.com/AutodeskAILab/Fusion360GalleryDataset), Autodesk Research's dataset of real designs with their construction history.
 
-> **Status:** in development. The dataset conversion, the geometric verifier and the drawing generation are built and measured (see [Results so far](#results-so-far)). A zero-shot baseline with a frontier model is measured. The open-model baseline and training are not started. Results are added as they are measured.
+> **Status:** in development. The dataset conversion, the geometric verifier and the drawing generation are built and measured (see [Results so far](#results-so-far)). Zero-shot baselines with a frontier model and an open model are measured. Training is not started. Results are added as they are measured.
 
 ## Example
 
@@ -126,16 +126,17 @@ Throughput on the same 800 designs, producing the drawing and all three represen
 | Model | Valid solid | Mean IoU | IoU > 0.9 | Chamfer distance | Volume error |
 | --- | --- | --- | --- | --- | --- |
 | Claude Opus 5.5, zero-shot | 99.6% | 0.940 | 86.0% | 0.0029 | 0.1% |
-| Qwen2.5-VL, zero-shot | | | | | |
+| Qwen2.5-VL (3B), zero-shot | 1.2% | 0.005 | 0.4% | – | – |
 | Qwen2.5-VL, fine-tuned | | | | | |
 | + GRPO with geometric reward | | | | | |
 | + repair loop | | | | | |
 
-The Claude Opus 5.5 row is measured on 243 test drawings, with one attempt per drawing, default settings and no examples in the prompt. The other rows are not measured yet.
+Both zero-shot rows are measured on the same 243 test drawings with the same prompt, one attempt per drawing and no examples in the prompt. The other rows are not measured yet.
 
 - **IoU is measured after aligning the centres of the two solids.** A drawing does not show where a part sits in space, so position is not graded. Size and orientation are.
 - **Mean IoU and IoU > 0.9 are over all drawings,** with a reply that gives no valid solid counted as 0. Chamfer distance (as a fraction of the part's diagonal) and volume error are medians over valid solids.
-- **Complexity is what lowers the score.** Parts built in one or two steps are above 90% at IoU > 0.9; parts with three or more steps are at 68.8%, and parts made of more than one body at 54.2%.
+- **The small open model does not know CadQuery.** 238 of its 243 programs stop on a name that does not exist, such as `cube(...)`, so only 3 build a solid. That is too few for a median, so its last two columns are left empty. This is the gap fine-tuning is meant to close.
+- **Complexity is what lowers the frontier model's score.** Parts built in one or two steps are above 90% at IoU > 0.9; parts with three or more steps are at 68.8%, and parts made of more than one body at 54.2%.
 - **The dataset is easy by design:** about half its parts are a single extrude, and the drawings are clean and computer-generated.
 
 ## Roadmap
@@ -147,7 +148,7 @@ MVP
 - [x] Meshes, point clouds and B-Rep graphs, added to the same pipeline
 - [x] Geometric evaluator: validity, IoU, volume and size error, Chamfer distance, face and edge counts
 - [x] Zero-shot baseline, frontier model
-- [ ] Zero-shot baseline, open model
+- [x] Zero-shot baseline, open model
 - [ ] LoRA fine-tune
 - [ ] Failure taxonomy
 - [ ] Demo: upload a drawing, see the solid

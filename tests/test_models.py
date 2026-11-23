@@ -3,14 +3,25 @@
 # No test here calls a model, so none of them costs anything.
 
 import json
+from pathlib import Path
 
 import cadquery as cq
 import pytest
 
 from d2b.eval.run import grade_reply, score_group
 from d2b.models.baselines import choose_pairs, cost_in_dollars
+from d2b.models.finetune import (
+    IGNORE,
+    build_training_messages,
+    find_answer_start,
+    format_answer,
+    keep_short,
+    learning_rate_scale,
+    mask_labels,
+    split_validation,
+)
 from d2b.models.prompt import SYSTEM_PROMPT, USER_PROMPT, extract_program
-from d2b.models.qwen import batches, build_messages, pending_pairs
+from d2b.models.qwen import batches, build_messages, default_out, pending_pairs
 
 BOX_PROGRAM = 'import cadquery as cq\n\nresult = cq.Workplane("XY").box(40, 20, 10)\n'
 
@@ -122,3 +133,66 @@ def test_pending_pairs_skips_finished_drawings(tmp_path):
 def test_batches_splits_a_list():
     assert batches([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
     assert batches([], 2) == []
+
+
+# A training answer is in the form the prompt asks for, so the grader can read it back.
+def test_training_answer_reads_back_as_the_program():
+    program = "import cadquery as cq\nresult = cq.Workplane().box(1, 2, 3)\n"
+    assert extract_program(format_answer(program)) == program
+
+
+# A training conversation is the baseline's conversation with the answer added as a last turn.
+def test_training_messages_add_the_answer_to_the_baseline_prompt():
+    messages = build_training_messages("result = 1")
+    assert messages[:-1] == build_messages()
+    assert messages[-1] == {"role": "assistant", "content": format_answer("result = 1")}
+
+
+# The held-back pairs are the same on every run and share nothing with the training pairs.
+def test_split_validation_is_repeatable_and_separate():
+    pairs = [{"name": f"part_{i}"} for i in range(20)]
+    train, validation = split_validation(pairs, count=5)
+    assert len(train) == 15 and len(validation) == 5
+    assert not {p["name"] for p in train} & {p["name"] for p in validation}
+    # The order the pairs arrive in does not change who is held back.
+    assert split_validation(pairs[::-1], count=5)[1] == validation
+
+
+# Pairs whose answer is over the limit are left out; one exactly at the limit is kept.
+def test_keep_short_drops_long_answers():
+    pairs = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+    assert keep_short(pairs, lengths=[10, 21, 20], limit=20) == [{"name": "a"}, {"name": "c"}]
+
+
+# The answer starts just after the last marker, even if the marker's tokens appear earlier too.
+def test_find_answer_start_uses_the_last_marker():
+    tokens = [7, 8, 1, 2, 5, 5, 1, 2, 9, 9]
+    assert find_answer_start(tokens, marker=[1, 2]) == 8
+    with pytest.raises(ValueError):
+        find_answer_start(tokens, marker=[3, 4])
+
+
+# Only the answer's tokens are training targets; the prompt and the padding are ignored.
+def test_mask_labels_keeps_only_the_answer():
+    tokens = [7, 8, 1, 2, 9, 4, 0, 0]
+    assert mask_labels(tokens, marker=[1, 2], padding=0) == [IGNORE] * 4 + [9, 4, IGNORE, IGNORE]
+
+
+# The learning rate rises during warm-up, peaks at full strength, and ends at zero.
+def test_learning_rate_scale_warms_up_then_decays():
+    scales = [learning_rate_scale(step, total_steps=100, warmup_steps=10) for step in range(101)]
+    assert scales[0] == pytest.approx(0.1)
+    assert max(scales) == pytest.approx(1.0)
+    assert scales[100] == pytest.approx(0.0)
+    assert all(a >= b for a, b in zip(scales[10:], scales[11:], strict=False))
+
+
+# Replies from a fine-tuned model go to a file named after the run, not over the baseline's.
+def test_default_out_names_the_file_after_the_run():
+    assert default_out("Qwen/Qwen2.5-VL-3B-Instruct", None) == Path(
+        "outputs/baseline_Qwen2.5-VL-3B-Instruct.jsonl"
+    )
+    adapter = Path("outputs/finetune/first/checkpoint-300")
+    assert default_out("Qwen/Qwen2.5-VL-3B-Instruct", adapter) == Path(
+        "outputs/finetuned_first_checkpoint-300.jsonl"
+    )

@@ -235,3 +235,6 @@ progress-5.md
 
 # Instructions for coding agents on the rented GPU machine
 GPU_AGENT_PHASE_*.md
+
+# Reports and patches from the GPU agent
+phase5*

@@ -1,14 +1,14 @@
 # drawing2brep
 
-Engineers describe parts with flat technical drawings, but design software needs a 3D model that can be edited. This project turns a drawing of a part into an editable CAD program, checks the result against the true geometry, and (planned) lets you change it with requests like "make it 5 mm thicker". This is a vision-language task: the model reads an image and writes code. It is trained and tested on [Fusion 360 Gallery](https://github.com/AutodeskAILab/Fusion360GalleryDataset), Autodesk Research's dataset of real designs with their construction history.
+Engineers describe parts with 2D technical drawings, but design software needs a 3D model that can be edited. This project turns a 2D drawing of a part into an editable 3D CAD program, checks the result against the true geometry, and (planned) lets you change it with requests like "make it 5 mm thicker". This is a vision-language task: the model reads an image and writes code. It is trained and tested on [Fusion 360 Gallery](https://github.com/AutodeskAILab/Fusion360GalleryDataset), Autodesk Research's dataset of real designs with their construction history.
 
-> **Status:** in development. The dataset conversion, the geometric verifier and the drawing generation are built and measured (see [Results so far](#results-so-far)). Zero-shot baselines with a frontier model and an open model are measured. Training is not started. Results are added as they are measured.
+> **Status:** the pipeline runs end to end, from the raw dataset to a fine-tuned model scored on 3D geometry. LoRA fine-tuning takes an open 3B model from 1.2% to 81.1% valid solids and from 0.005 to 0.533 mean IoU (see [Model results](#model-results)). Next: training on a geometric reward, and a demo.
 
 ## Example
 
 One part from the dataset: a hex nut with a stepped hole (design `22430_c6f08b03_0029`).
 
-**1. Input: a technical drawing of the part.** Front, top and right views, with hidden edges dashed and the overall dimensions marked.
+**1. Input: a 2D technical drawing of the part.** Front, top and right views, with hidden edges dashed and the overall dimensions marked.
 
 <img src="docs/example_drawing.png" alt="Three-view technical drawing of a hex nut" width="560">
 
@@ -38,17 +38,17 @@ part_2 = (
 result = result.cut(part_2)
 ```
 
-**3. Result: the part the program builds.** Running the program gives this solid, which matches the dataset's ground-truth solid with an IoU of 0.9997.
+**3. Result: the 3D part the program builds.** Running the program gives this solid, which matches the dataset's ground-truth solid with an IoU of 0.9997.
 
 <img src="docs/example_part.png" alt="Shaded 3D render of the hex nut built by the program" width="360">
 
-This shows the intended end-to-end result. The model is not trained yet: the program above is the verified label for this part, which is what the model will be trained to write when given the drawing.
+The program above is the verified label for this part: what the model is trained to write when given the drawing.
 
 ## How it works
 
 1. **Done.** Converts each dataset design into a CadQuery program and verifies it reproduces the original solid.
 2. **Done.** Produces every representation of each design with a Ray pipeline: orthographic drawing with hidden lines, mesh, point cloud, and B-Rep face-adjacency graph.
-3. **Planned.** Fine-tunes a vision-language model to write the CadQuery program from the drawing.
+3. **Done.** Fine-tunes a vision-language model (Qwen2.5-VL 3B, with LoRA) to write the CadQuery program from the drawing.
 4. **Done.** Executes the generated program in a sandbox and measures the solid against the ground truth.
 
 ## Design
@@ -58,6 +58,7 @@ This shows the intended end-to-end result. The model is not trained yet: the pro
 - **Official split.** The dataset's 6,900 training and 1,725 test designs. Only designs with a verified program are used (6,155 and 1,541), so test results are on that subset and are comparable with work that uses all 1,725.
 - **Drawings carry overall dimensions.** Without them scale cannot be recovered. Metrics are reported both absolute and scale-normalised. Sizes of inner features such as holes are not marked, so the model has to estimate them from the image, which limits how exact its output can be.
 - **Baselines before training.** Off-the-shelf models are benchmarked first on the same test set.
+- **The test set is used once.** The learning rate and the checkpoint are chosen on a validation set held out from the training pairs. The checkpoint is chosen by geometric score, not by loss.
 - **Failure taxonomy.** Each failure is classed as wrong dimension, missing feature or invalid solid.
 
 ## Results so far
@@ -127,17 +128,76 @@ Throughput on the same 800 designs, producing the drawing and all three represen
 | --- | --- | --- | --- | --- | --- |
 | Claude Opus 5.5, zero-shot | 99.6% | 0.940 | 86.0% | 0.0029 | 0.1% |
 | Qwen2.5-VL (3B), zero-shot | 1.2% | 0.005 | 0.4% | – | – |
-| Qwen2.5-VL, fine-tuned | | | | | |
+| Qwen2.5-VL (3B), fine-tuned with LoRA | 81.1% | 0.533 | 33.3% | 0.0093 | 13.0% |
 | + GRPO with geometric reward | | | | | |
 | + repair loop | | | | | |
 
-Both zero-shot rows are measured on the same 243 test drawings with the same prompt, one attempt per drawing and no examples in the prompt. The other rows are not measured yet. Per-part measurements are in [`results/`](results/).
+The first three rows are measured on the same 243 test drawings with the same prompt, one attempt per drawing and no examples in the prompt. The other rows are not measured yet. Per-part measurements are in [`results/`](results/).
 
 - **IoU is measured after aligning the centres of the two solids.** A drawing does not show where a part sits in space, so position is not graded. Size and orientation are.
 - **Mean IoU and IoU > 0.9 are over all drawings,** with a reply that gives no valid solid counted as 0. Chamfer distance (as a fraction of the part's diagonal) and volume error are medians over valid solids.
-- **The small open model does not know CadQuery.** 238 of its 243 programs stop on a name that does not exist, such as `cube(...)`, so only 3 build a solid. That is too few for a median, so its last two columns are left empty. This is the gap fine-tuning is meant to close.
+- **The small open model does not know CadQuery.** 238 of its 243 programs stop on a name that does not exist, such as `cube(...)`, so only 3 build a solid. That is too few for a median, so its last two columns are left empty.
+- **Fine-tuning teaches the open model CadQuery.** Valid solids rise from 3 of 243 to 197, and 64 parts are reproduced almost exactly (IoU above 0.99). No fine-tuned program fails on a name that does not exist. Details are in [Fine-tuning](#fine-tuning).
 - **Complexity is what lowers the frontier model's score.** Parts built in one or two steps are above 90% at IoU > 0.9; parts with three or more steps are at 68.8%, and parts made of more than one body at 54.2%.
 - **The dataset is easy by design:** about half its parts are a single extrude, and the drawings are clean and computer-generated.
+
+### Fine-tuning
+
+Qwen2.5-VL (3B) is fine-tuned on the training pairs to write the verified program when shown the drawing. The training loop is written in plain PyTorch. The code is in [`src/d2b/models/finetune.py`](src/d2b/models/finetune.py).
+
+| Setting | Value |
+| --- | --- |
+| Method | LoRA on the attention projections (`q_proj`, `k_proj`, `v_proj`, `o_proj`) of the language model. The vision encoder is frozen |
+| Trainable weights | 7.4 million, about 0.2% of the model |
+| LoRA rank, alpha, dropout | 16, 32, 0.05 |
+| Loss | Next-token cross-entropy on the program tokens only. The prompt and the image tokens are masked out |
+| Data | 5,685 training pairs and 300 validation pairs. 170 pairs with a program over 2,048 tokens are left out |
+| Input | The drawing at 756 × 756 (729 image tokens), with the same prompt as the baselines |
+| Optimiser | AdamW, no weight decay, gradients clipped to norm 1.0 |
+| Learning rate | 2e-4, with linear warm-up over the first 5% of updates, then cosine decay to zero |
+| Batch | 16 pairs per update (1 pair at a time, gradients accumulated) |
+| Length | 3 epochs, 1,068 updates |
+| Precision | Frozen weights in bfloat16, LoRA weights in float32, mixed-precision forward pass |
+| Hardware and time | One RTX 3090 (24 GB), 3 hours 26 minutes |
+
+**How the settings were chosen.** Only the learning rate was searched. Three rates were each trained for 150 updates on 1,000 pairs and compared on validation loss:
+
+| Learning rate | Validation loss after 150 updates |
+| --- | --- |
+| 5e-5 | 0.324 |
+| 1e-4 | 0.303 |
+| 2e-4 | 0.289 |
+
+The other settings are common LoRA defaults and were not tuned. The batch size is set by memory.
+
+**How the checkpoint was chosen.** Validation loss fell at every check, from 0.293 to 0.243, and ended level with the training loss, so there was no overfitting. Loss measures text and not shape, so the three checkpoints with the lowest validation loss each wrote programs for 100 validation drawings, and these were scored geometrically. They were tied within noise (mean IoU 0.463 to 0.480). The one with the highest mean IoU was run on the test drawings, once.
+
+**Fitting long programs in 24 GB.** Training memory grows with sequence length, and the longest examples (about 3,100 tokens) did not fit even at a batch size of one. Gradient checkpointing is switched on only for batches over 2,200 tokens, about 5% of them, so the rest train at full speed.
+
+**Results by complexity.** Share of test parts with IoU above 0.9, by the number of steps in the true program:
+
+| Steps | Parts | Claude Opus 5.5, zero-shot | Qwen2.5-VL (3B), fine-tuned |
+| --- | --- | --- | --- |
+| 1 | 116 | 93.1% | 57.8% |
+| 2 | 63 | 90.5% | 17.5% |
+| 3 or more | 64 | 68.8% | 4.7% |
+
+The fine-tuned model is usable on single-step parts and falls off sharply after that. The overall size of its solids is nearly always right (median error 0.1%), because the drawing states it. What is inside is less accurate (median volume error 13.0%), and the drawing does not mark inner sizes.
+
+**Where the 243 fine-tuned replies went:**
+
+| Outcome | Replies | Share |
+| --- | --- | --- |
+| Valid solid, IoU above 0.9 | 81 | 33.3% |
+| Valid solid, IoU from 0.5 to 0.9 | 47 | 19.3% |
+| Valid solid, IoU below 0.5 | 69 | 28.4% |
+| Reply reached the 2,048-token limit unfinished | 27 | 11.1% |
+| Program raised an error | 10 | 4.1% |
+| Solid was invalid | 9 | 3.7% |
+
+- **Unfinished replies are a failure to stop, not a length limit.** In 22 of the 27, the true program fits well inside the limit, but the model keeps adding steps (up to 17 for a part that needs 2) or repeats one line. 23 of the 27 are parts with three or more steps.
+- **Errors are geometric, not syntactic.** 7 of the 10 are an arc through three points that do not define one.
+- **Next-token loss does not reward stopping or correct geometry.** This is the reason for the planned stage that trains on a geometric reward.
 
 ## Roadmap
 
@@ -149,7 +209,7 @@ MVP
 - [x] Geometric evaluator: validity, IoU, volume and size error, Chamfer distance, face and edge counts
 - [x] Zero-shot baseline, frontier model
 - [x] Zero-shot baseline, open model
-- [ ] LoRA fine-tune
+- [x] LoRA fine-tune
 - [ ] Failure taxonomy
 - [ ] Demo: upload a drawing, see the solid
 
@@ -180,6 +240,15 @@ uv run python -m d2b.data.verify --subset single   # single-extrude designs only
 ```
 
 The script, [`src/d2b/data/verify.py`](src/d2b/data/verify.py), prints the yield and a breakdown of failures, and writes one record per design, including the generated program, to `outputs/verify.jsonl`.
+
+To fine-tune, generate programs with the result, and score them (the first two need a GPU with 24 GB):
+
+```bash
+uv sync --extra gpu
+uv run --extra gpu python -m d2b.models.finetune --run-name full --learning-rate 2e-4 --batch-size 1 --accumulate 16
+uv run --extra gpu python -m d2b.models.qwen --limit 243 --max-new-tokens 2048 --adapter outputs/finetune/full/checkpoint-900
+uv run python -m d2b.eval.run outputs/finetuned_full_checkpoint-900.jsonl
+```
 
 ## Data and licence
 

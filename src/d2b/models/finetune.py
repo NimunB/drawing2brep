@@ -33,6 +33,9 @@ IGNORE = -100
 # The text that opens the model's turn; everything after it is the answer.
 ANSWER_MARKER = "<|im_start|>assistant\n"
 
+# Batches with more tokens than this use gradient checkpointing, so they fit on a 24 GB card.
+CHECKPOINT_ABOVE_TOKENS = 2200
+
 # The layers that get LoRA weights: the attention layers of the language part of the model.
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 
@@ -138,12 +141,24 @@ def encode_batch(processor, pairs: list[dict], image_root: Path, device: str) ->
     return inputs.to(device)
 
 
+# Switches the slower, memory-saving way of computing gradients on for large batches only.
+def set_memory_saving(model, tokens: int) -> None:
+    base = model.get_base_model()
+    if tokens > CHECKPOINT_ABOVE_TOKENS:
+        base.activation_checkpointing_enable()
+        # Enabling also sends gradients through the frozen image part, which only costs memory.
+        base.disable_input_require_grads()
+    else:
+        base.activation_checkpointing_disable()
+
+
 # Runs the model on one batch and returns its loss and how many answer tokens it covered.
 def batch_loss(model, processor, pairs: list[dict], image_root: Path, device: str):
     import torch
 
     inputs = encode_batch(processor, pairs, image_root, device)
     tokens = int((inputs["labels"] != IGNORE).sum())
+    set_memory_saving(model, inputs["input_ids"].numel())
     # Half-size arithmetic on the GPU, which is faster and is what the frozen weights use.
     with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=device == "cuda"):
         loss = model(**inputs).loss
